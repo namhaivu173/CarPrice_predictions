@@ -1,0 +1,721 @@
+---
+title: | 
+   <center>\vspace{7cm}**Car Price Predictions**</center>
+author: "Hai Vu"
+date: "February 14, 2023"
+#date: '`r format(Sys.time(),"%d %B, %Y")`'
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    # pandoc_args: --listings
+    # includes:
+    #   in_header: preamble.tex
+    pandoc_args: --wrap=auto
+  toc: true
+  toc_depth: 2
+  number_sections: true
+indent: true
+header-includes:
+  - \usepackage{indentfirst}
+  - \usepackage{ragged2e}
+  - \usepackage[labelformat=empty]{caption}
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \usepackage[fontsize=12pt]{scrextend}
+  
+---
+\pagenumbering{gobble}
+
+```{r message=FALSE, warning=FALSE, results = FALSE, include=FALSE}
+# Libraries installation
+install_load_package <- function(pkg){
+new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE, quiet = TRUE)
+    sapply(pkg, suppressPackageStartupMessages(require), character.only = TRUE)
+}
+
+list.of.packages <- c("ggplot2","pls","glmnet","Matrix","smbinning","ROCR","randomForest",
+                      "RCurl","curl","httr","car","caTools","devtools","wordstonumbers",
+                      "ISLR","plyr","Matrix","knitr","dplyr","InformationValue","viridis",
+                      "tidyverse","tibble","RColorBrewer","kableExtra","mctest",
+                      "formatR","DescTools","ggpubr","psych","caret","Metrics",
+                      "Information","MASS","e1071","class","pROC","corrplot")
+
+install_load_package(list.of.packages)
+
+# Libraries on github
+# devtools::install_github("fsingletonthorn/words_to_numbers")
+# devtools::install_github("selva86/InformationValue")
+# library(InformationValue)
+# library(wordstonumbers)
+
+```
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+knitr::opts_chunk$set(echo = T, tidy = F, message=F, warning=F, fig.align="center")
+# options(width = 100)
+
+```
+
+\newpage
+\pagenumbering{arabic}  
+\thispagestyle{plain}
+\mbox{}
+
+\setcounter{tocdepth}{2}
+\renewcommand{\contentsname}{TABLE OF CONTENTS}
+
+\tableofcontents
+
+\newpage
+# I. INTRODUCTION
+
+This project aims to utilize the multivariate linear regression and random forest algorithms to predict the price of cars, given their characteristics. In this exercise, I will examine the significance of different predictors, their influence on the pricing of cars, and the accuracy of my predictive models. The data set used in this project is from: [https://archive.ics.uci.edu/ml/datasets/Automobile]{.ul}.
+
+# II. ANALYSIS
+
+## 1. Import data and perform data cleaning
+
+First, we import the given car data set.
+```{r}
+# Import data set
+df_car <- read.csv("CarPrice_Data.csv")
+
+# Overview of data set
+str(df_car, width = 70, strict.width = "cut")
+
+```
+
+The data set contains 205 records and 26 fields of data. Let's check for invalid values within the rows:
+
+```{r}
+# Check for NAs
+col_names <- colnames(df_car)
+sapply(df_car, FUN = function(col_names) {
+  table(is.na(df_car))
+})
+
+# Check for blanks
+sapply(df_car, FUN=function(col_names){
+  is.element("",col_names)
+})
+
+# Check for repeated values
+paste("There are",nrow(df_car) - nrow(distinct(df_car)),
+      "duplicated record(s) in the data set")
+
+```
+
+There are no blank values as well as repeated values in the data set. Next, we check the normality assumption for the dependent variable "price":
+
+```{r}
+# Check for dependent variables normality
+par(mfcol=c(1,2),mai=c(1,1,0.5,0.5))
+hist(df_car$price,col="pink",main="",xlab="Car Price")
+hist(log(df_car$price),col="lightblue",main="",xlab="Logarithm of Car Price")
+mtext(expression(bold("Figure 1. Histograms of car price")), 
+      side = 3, line = -1.5, outer = TRUE, cex=1.1)
+```
+
+From figure 1, we can see that the distribution of the car price is heavily right-skewed. Therefore, we use log transform method to make the car price distribution more normal. Our dependent variable will now be the logarithm of car price. Next, we look at the descriptive statistics for different variables in the data set. To do this, I first remove "car_ID" since it is only a primary key in the data set, and then separate the numerical and categorical features:
+
+```{r}
+# Separate numerical and categorical values:
+df_car2 <- df_car[ , !(names(df_car) %in% "car_ID")] # remove car_ID
+df_num <- select_if(df_car2, is.numeric)
+df_char <- select_if(df_car2, is.character)
+```
+
+The table 1 below captures the descriptive statistics for the distribution of numerical features in the data set, including their count, mean, median, standard deviation, minimum and maximum values:
+
+```{r}
+# Descriptive stats of the data set
+num_stats <- describe(df_num)[,c('n','mean','median','sd','min','max')]
+num_stats <- as.data.frame(num_stats)
+
+num_stats <-
+  num_stats %>% 
+  mutate_at(vars(mean,sd), funs(round(.,1)))
+
+knitr::kable(num_stats, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 1. Descriptive statistics of the numerical variables") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+The table 2 below captures the descriptive statistics for the categorical features, including their count and number of unique values:
+
+```{r}
+# Show descriptive statistics of the categorical values
+char_uniq <- as.matrix(lengths(lapply(df_char,unique)))
+char_n <- describe(df_char)[,c('n')]
+char_stats <- cbind(char_uniq,char_n)
+colnames(char_stats) <- c("Unique","Count")
+char_stats <- as.data.frame(char_stats)
+char_stats <- char_stats[order(-char_stats$Unique),]
+
+knitr::kable(char_stats, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 2. Descriptive statistics of the categorical variables") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+
+```
+```{r, include=F}
+set.seed(123)
+Car_Names <- paste(as.array(sample(df_car$CarName, 3)),collapse=", ")
+```
+
+From table 2 above, we can see that for ``r nrow(df_car)`` observations, ``r max(char_stats$Unique)`` categories of "CarName" are perhaps too many for meaningful analysis. Thus, I'm looking to modify this column so that it contains less number of unique values. The original "CarName" include the brand name, followed by some model names or series (e.g.: ``r Car_Names``). Thus, I will transform this column to include only the brand names of the cars and try to reduce the number of unique categories:
+
+* Transform "CarName":
+```{r}
+# Remove serial numbers and lower the case:
+df_car2$CarName <- trimws(tolower(gsub( " .*$", "", df_car$CarName)))
+
+# Group similar brands
+df_car2$CarName <- if_else(df_car2$CarName == "toyouta","toyota",df_car2$CarName)
+df_car2$CarName <- if_else(df_car2$CarName == "maxda","mazda",df_car2$CarName)
+df_car2$CarName <- if_else(df_car2$CarName == "vw" | df_car2$CarName == "vokswagen",
+                           "volkswagen",df_car2$CarName)
+df_car2$CarName <- if_else(df_car2$CarName == "porcshce","porsche",df_car2$CarName)
+sort(table(df_car2$CarName))
+
+# Further reduce number of CarName categories by grouping values with low count 
+`%notin%` <- Negate(`%in%`)
+df_car2$CarName <- if_else(df_car2$CarName %notin% names(tail(sort(table(df_car2$CarName)),5)),"others",df_car2$CarName)
+
+# Show current brand names value distribution
+sort(table(df_car2$CarName))
+```
+
+From ``r length(unique(df_car$CarName))`` different car names, there are now only ``r length(unique(df_car2$CarName))`` unique car brands, which makes it much easier to conduct our analysis in the next steps. Next, I want to examine other categorical variables with high number of unique values as well, including "fuelsystem", "enginetype", and "cyclindernumber". My intention is to group categories with low counts into bigger categories, thus, reducing the total number of unique values overall.
+
+* Transform "fuelsystem":
+```{r}
+# Examine fuel system value distribution
+sort(table(df_car2$fuelsystem))
+
+# Regroup fuel system 
+df_car2$fuelsystem <- if_else(df_car$fuelsystem %in% names(head(sort(table(df_car2$fuelsystem)),6)),"others",df_car2$fuelsystem)
+
+# Value distribution after regrouped
+sort(table(df_car2$fuelsystem))
+```
+
+By grouping "mfi", "spfi", "4bbl", "spdi", "1bbl", and "idi", I have managed to decrease the number of unique groups from ``r length(unique(df_car$fuelsystem))`` to ``r length(unique(df_car2$fuelsystem))``.
+
+* Transform "enginetype":
+```{r}
+# Examine engine type value distribution
+sort(table(df_car2$enginetype))
+
+# Regroup engine type
+df_car2$enginetype <- if_else(df_car$enginetype %notin% c("ohc"),"not_ohc",df_car2$enginetype)
+
+# Value distribution after regrouped
+sort(table(df_car2$enginetype))
+```
+
+By grouping engine types that are different from "ohc", which has the highest count, I have managed to decrease the number of unique groups from ``r length(unique(df_car$enginetype))`` to ``r length(unique(df_car2$enginetype))``.
+
+* Transform "cylindernumber":
+```{r}
+# Examine cylinder number value distribution
+sort(table(df_car2$cylindernumber))
+
+# Convert cylinder number into numeric data type
+df_car2$cylindernumber <- as.numeric(sapply(df_car2$cylindernumber, words_to_numbers))
+
+# Value distribution after regrouped
+sort(table(df_car2$cylindernumber))
+```
+
+For the "cylindernumber" feature, I have noticed that their values are just numbers spelled out in words. Thus, using the function words_to_numbers() found on [https://github.com/fsingletonthorn/words_to_numbers]{.ul}, I am able to convert these characters into numerical values.
+
+Next, let's examine the correlation matrix between numerical variables in the data set:
+
+```{r}
+# Correlation plot:
+cors <- cor(select_if(df_car2, is.numeric), use="pairwise")
+p_val <- cor.mtest(select_if(df_car2, is.numeric), conf.level=0.95)$p
+corrplot(cors,type="upper",mar=c(0,0,1.5,0),method="color",
+         number.cex=0.5,tl.cex=0.8,
+         #col=brewer.pal(8,"RdYlBu"),
+         addCoef.col = 1,number.digits = 1,
+         title="Figure 2. Correlation matrix of numerical values")
+```
+
+```{r, include=F}
+# corrplot(cors, is.corr = FALSE, col.lim = c(-1, 1), method = 'color', tl.pos = 'n',
+#          col = COL1('YlGn'), cl.pos = 'b', addgrid.col = 'white', addCoef.col = 'grey50')
+# 
+# corrplot(cors, p.mat = p_val, type="upper", sig.level = 0.05, order = 'hclust')
+# corrplot.mixed(cors, order = 'AOE',tl.pos ="lt",mar=c(0,0,1.5,0),bg="gray",
+#                number.cex=0.6,diag="n",number.digits = 1,addgrid.col="gray",
+#                title="Figure 2. Correlation matrix of numerical values",
+#                cl.offset=-0.5,
+#                upper.col=brewer.pal(8,"RdYlBu"),
+#                lower.col=brewer.pal(8,"RdYlBu"),)
+```
+
+As seen from figure 2, there seems to be a number of highly correlated pairs of variables in the data set, such as wheel base & car length, or horse power & city mpg. When conducting linear regression analysis, we should pay attention to these pairs of variables so as to avoid multi-collinearity events. We can try to remove a number of variables from our list of predictors. After examining figure 2, I decided to remove 7 variables, which are "curbweight", "highwaympg", "citympg", "carlength", "enginesize", "cylindernumber", and "carwidth":
+
+```{r}
+# Remove correlated features
+df_car3 <- df_car2[,!(names(df_car2) %in% c("curbweight", "highwaympg", "citympg", "carlength", "enginesize", "carwidth", "cylindernumber"))]
+```
+
+```{r, results=F, include=F}
+# Set up correlation table
+cors_tbl <- as.data.frame(cors, drop=F)
+cors_var <- rownames(cors_tbl)
+my_list <- matrix(nrow=length(cors_var)^2)
+
+# Create list of repeating variable names
+for (i in 0:(length(cors_var)-1)){
+  my_list[(i*length(cors_var)+1):(i*length(cors_var)+length(cors_var)),] <- cors_var[i+1]
+}
+
+# Build a data frame containing feature pairs & their correlation
+cors_tbl2 <- cors_tbl %>% pivot_longer(cols=cors_var, names_to = "Var1")
+cors_tbl2$Var2 <- my_list
+cors_tbl2 <- cors_tbl2[,c(1,3,2)]
+
+# Filter for highly correlated pairs
+cors_tbl2 <- cors_tbl2[cors_tbl2$Var1 != "price" & cors_tbl2$Var2 != "price" & 
+                       cors_tbl2$value != 1 & 
+                      (cors_tbl2$value <= -0.6 | cors_tbl2$value >= 0.6),]
+
+# Remove duplicated pairs & rename column
+cors_tbl2 <- cors_tbl2[!duplicated(cors_tbl2$value),]
+cors_tbl2 <- rename(cors_tbl2, Correlation = value)
+
+# Sort df by absolute correlation
+cors_tbl2$Abs_Correlation <- abs(cors_tbl2$Correlation)
+cors_tbl2 <- cors_tbl2[order(-cors_tbl2$Abs_Correlation),]
+
+# knitr::kable(cors_tbl2, "simple",
+#              caption="Table 3. Highly correlated pairs of variables") %>%
+#   kable_styling(position = "center")
+```
+
+## 2. Create training & testing sets and construct linear regression models
+
+First, I'd like to scale the numerical variables and convert categorical features into the factor data type:
+
+```{r, include=F}
+# Get names of numerical and categorical columns
+num_vars <- colnames(select_if(df_car3[,!(names(df_car3) %in% c("price"))],is.numeric))
+char_vars <- colnames(select_if(df_car3,is.character))
+```
+```{r}
+# Convert categorical to factor
+for (i in colnames(select_if(df_car3,is.character))){
+  df_car3[,i] <- as.factor(df_car3[,i])
+}
+
+# Re-level factors of "CarName" & "fuelsystem"
+df_car3$CarName <- factor(df_car3$CarName, levels = c("others","honda","mitsubishi","mazda","nissan","toyota"))
+df_car3$fuelsystem <- factor(df_car3$fuelsystem, levels = c("others","2bbl","mpfi"))
+
+# Define min max scaling function
+minmax_scale <- function(x, na.rm = TRUE) {
+    return((x- min(x)) /(max(x)-min(x)))
+}
+
+# Normalize numerical values in each set (except for the dependent variable)
+for (i in colnames(select_if(df_car3[,!(names(df_car3) %in% "price")],is.numeric))){
+  df_car3[,i] <- minmax_scale(df_car3[,i])
+}
+
+# Show current data set
+str(df_car3, width = 70, strict.width = "cut")
+```
+
+After cleaning the data set and scaling the numerical values, we can go head and split the data set into training and testing sets. For this assignment, I will use the 80/20 split ratio:
+
+```{r}
+# Split 80/20
+set.seed(123)
+trainRatio <- createDataPartition(df_car3$price,p=0.8,list=F,times=1)
+df_train <- df_car3[trainRatio,]
+df_test <- df_car3[-trainRatio,]
+
+# Dimension of each set
+dim_traintest <- data.frame(dim(df_train),dim(df_test))
+row.names(dim_traintest) <- c("No. of Rows","No. of Columns")
+colnames(dim_traintest) <- c("Training Set","Testing Set")
+knitr::kable(dim_traintest, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 3. Dimension of training set and testing set") %>%
+  kable_styling(position = "center",latex_options = c("repeat_header"))
+```
+
+Next, using the training set, we construct the linear regression models:
+
+```{r}
+# Construct linear model:
+lm_model1 <- lm(data=df_train,log(price)~.)
+summary(lm_model1)
+```
+
+My first linear regression model uses every variables in the clean data set. To check for multi-collinearity issues with my model, I calculate the Variance Inflation Factor for each feature in my regression model. The VIF shows what percentage the variance is inflated by for each coefficient if there was no correlation with other predictors (Glen, 2015). The VIF values can be interpreted as follow:
+
+* VIF close to 1 means no correlation
+* VIF between 1 and 5 is considered moderately correlated, or an acceptable level
+* VIF more than 5 is considered highly-correlated. In this case, we should try to remove one or more of those correlated variables to avoid multi-collinearity
+
+To remove multi-collinearity cases, my goal is to keep the VIFs of all features below 5 in this case. The following table shows the VIF values for each independent variables in the first linear regression model:
+
+```{r}
+options(scipen=999)
+
+# Check for multi-collinearity using VIF
+df_vif <- as.data.frame(car::vif(lm_model1))
+colnames(df_vif) <- "VIF"
+df_vif <- cbind(Variables = rownames(df_vif), df_vif)[,c(1,2)]
+df_vif <- df_vif[order(-df_vif$VIF),]
+rownames(df_vif) <- NULL
+knitr::kable(df_vif, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 4. Variance Inflation Factor of variables in first model") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+From table 4, we can see that "fueltype", "compressionratio", "CarName", and "carbody" are the features with the highest VIFs. Thus, I decided to create a second linear regression model with less independent features:
+
+```{r}
+# Create new linear regression model with less features:
+lm_model2 <- lm(data=df_train,log(price)~. -fueltype -compressionratio -CarName -carbody)
+summary(lm_model2)
+```
+
+The VIFs of the new list of features are calculated in table 5 below:
+
+```{r}
+options(scipen=999)
+
+# Check for multi-collinearity using VIF
+df_vif2 <- as.data.frame(car::vif(lm_model2))
+colnames(df_vif2) <- "VIF"
+df_vif2 <- cbind(Variables = rownames(df_vif2), df_vif2)[,c(1,2)]
+df_vif2 <- df_vif2[order(-df_vif2$VIF),]
+rownames(df_vif2) <- NULL
+knitr::kable(df_vif2, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 5. Variance Inflation Factor of variables in second model") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+As shown in table 5, the VIFs of all features in the second model are below 5 now. Thus, we can safely assume that this model is free of multi-collinearity issues. Next, I want to compare the first model with the second model to see how the removal of independent features affect the models' training performance. The 2 models will be evaluated using the number of features used, r-squared, adjusted r-squared, Root Mean Squared Error (RMSE), and Mean Absolute Percentage Error (MAPE):
+
+```{r}
+# Calculate r-squared, adjusted r-squared, rmse, mape
+lm1_train_score <- rbind(format(nrow(df_vif),nsmall=0),
+                         round(summary(lm_model1)$r.squared,4),
+                         round(summary(lm_model1)$adj.r.squared,4),
+                         round(rmse(df_train$price, exp(lm_model1$fitted.values)),4),
+                         round(mape(df_train$price, exp(lm_model1$fitted.values)),4))
+lm2_train_score <- rbind(format(nrow(df_vif2),nsmall=0),
+                         round(summary(lm_model2)$r.squared,4),
+                         round(summary(lm_model2)$adj.r.squared,4),
+                         round(rmse(df_train$price, exp(lm_model2$fitted.values)),4),
+                         round(mape(df_train$price, exp(lm_model2$fitted.values)),4))
+
+# Create table that compare models
+compare_lm <- as.data.frame(cbind(lm1_train_score,lm2_train_score))
+colnames(compare_lm) <- c("First LR Model","Second LR Model")
+rownames(compare_lm) <- c("# Features Used","R-Squared","Adjusted R-Squared","RMSE","MAPE")
+knitr::kable(compare_lm, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 6. Linear Regression Models Training Performance") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+From table 6, both models seem to have relatively high accuracy as represented by their r-squared and adjusted r-squared statistics. The model 1 r-squared and adjusted r-squared are ``r round(summary(lm_model1)$r.squared,4)`` and ``r round(summary(lm_model1)$adj.r.squared,4)``, respectively. These metrics are slightly higher compared to model 2, which have its r-squared and adjusted r-squared values at ``r round(summary(lm_model2)$r.squared,4)`` and ``r round(summary(lm_model2)$adj.r.squared,4)``, respectively. This means that model 1 is able to explain ``r paste0(round(summary(lm_model1)$r.squared,4)*100,"%")`` of the variances in the car prices, compared to only ``r paste0(round(summary(lm_model2)$adj.r.squared,4)*100,"%")`` in model 2. In addition, we can see that with fewer independent features to work with, the second linear model generated a slightly lower r-squared, adjusted r-squared and higher RMSE compared to the first linear model. However, it's important to remember that the first model can be biased since the multi-collinearity issues may cause the models to over-prioritize similar predictors. Moreover, models that require less number of predictors can be considered more robust when it comes to predictions because they need less training data input. I will continue my analysis using the second linear regression model.
+
+To observe the influence each variable has on price, we examine the regression coefficients of each predictor:
+
+```{r}
+# Create data frame containing coefficients and p-values:
+step_signif <- 
+  cbind(as.data.frame(summary(lm_model2)$coefficients[,1]), # Coefficients
+        exp(as.data.frame(summary(lm_model2)$coefficients[,1])), # Exponential of coefficients
+        as.data.frame(summary(lm_model2)$coefficients[,4])) # P-values
+colnames(step_signif) <- c("Coefficients","Exp_Coefficients","P_values")
+step_signif <- step_signif[!(row.names(step_signif) %in% "(Intercept)"),] # remove intercept
+step_signif$Influence <- if_else(step_signif$Coefficients < 0,"Negative","Positive") # group by price influence
+step_signif <- step_signif[order(-step_signif$Exp_Coefficients),,drop=F] # order by exp coef
+step_signif <- cbind(Variables = rownames(step_signif), step_signif) # create column from index
+rownames(step_signif) <- NULL # remove index
+
+# Show regression coefficients of features
+ggplot(data=step_signif, aes(x=Coefficients, 
+                             y=reorder(Variables,Coefficients), 
+                             fill=reorder(Influence,-Coefficients), 
+                             label=round(Coefficients,2))) +
+  geom_bar(stat="identity") +
+  ggtitle(expression(bold("Figure 3. Variable Regression Coefficients"))) +
+  ylab("Variables") + xlab(expression("Coefficients" ~ (beta))) +
+  theme_light() +
+  theme(
+    legend.position="right",
+    plot.title = element_text(hjust = 0.5),
+    #panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    #panel.border = element_blank(),
+    #axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()) +
+  guides(fill=guide_legend(title="Price Influence")) +
+  geom_text(aes(x = Coefficients + 0.1 * sign(Coefficients)), size = 2.5) +
+  scale_fill_manual(values=c("darkgreen","darkred"))
+```
+
+From figure 3, it seems that the top 3 most influential variables on the car price are "horsepower", "wheelbase" and "enginelocation". Among these 3, "horsepower" has the greatest positive influence of the car prices, with its coefficient value at ``r round(max(step_signif$Coefficients),2)``. It's important to keep in mind that the current dependent variable is the natural logarithm of the car prices and not the car prices themselves, thus, for better interpretability, we need to convert these regression coefficients (denoted $\beta$) into the percentage increase/decrease in price by using the formula: $\beta*100$%. This means that each unit increase in "horsepower" is associated with a $\beta_{horsepower}*100$% = ``r paste0(round(100*max(step_signif$Coefficients),2),"%")`` change in car prices, or a ``r paste0(round(100*max(step_signif$Coefficients),2)-100,"%")`` increase in car prices. On the contrary, each unit increase in "peakrpm" (the car's peak round per minute) is associated with a $\beta_{peakrpm}*100$% = ``r paste0(round(100*(filter(step_signif, Variables=="peakrpm")$Coefficients),2),"%")`` change in car prices, or a ``r paste0(100+round(100*(filter(step_signif, Variables=="peakrpm")$Coefficients),2),"%")`` decrease in car prices.
+
+## 3. Create training & testing sets and construct random forest models
+
+In this section, I will employ the random forest algorithm for regression to help make the car price predictions. Random Forest utilizes methods such as bootstrap sampling and feature sampling (or bagging), i.e. row sampling and column sampling. Therefore, Random Forest is generally not affected by multi-collinearity too much since it is picking different set of features for different models and of course every model sees a different set of data points. However, there is still chances of highly-correlated features getting picked up together, and when that happens we will see some trace of it in the feature importance. This is because when features have similar effects or there is a relation in between the features, it can be difficult to rank the relative importance of features (Raj, 2019). For this, I intend to create 2 different models that use two different training data sets, one before the correlated features are removed and one after:
+
+```{r}
+# Convert categorical to factor for data set before features removal
+for (i in colnames(select_if(df_car2,is.character))){
+  df_car2[,i] <- as.factor(df_car2[,i])
+}
+
+df_car2$CarName <- factor(df_car2$CarName, levels = c("others","honda","mitsubishi","mazda","nissan","toyota"))
+df_car2$fuelsystem <- factor(df_car2$fuelsystem, levels = c("others","2bbl","mpfi"))
+
+# Split 80/20 for data set before features removal
+set.seed(123)
+trainRatio2 <- createDataPartition(df_car2$price,p=0.8,list=F,times=1)
+df_train2 <- df_car2[trainRatio2,]
+df_test2 <- df_car2[-trainRatio2,]
+
+# Fit 2 random forest models
+rf_model1 = randomForest(price ~ . -fueltype -compressionratio -CarName -carbody -curbweight -highwaympg -citympg -carlength -enginesize -carwidth -cylindernumber, data=df_train2, ntree=500, proximity=T, importance=T, nPerm=2) # without correlated features
+
+rf_model2 = randomForest(price ~ .,data=df_train2, ntree=500, proximity=T, importance=T, nPerm=2) # with correlated features
+```
+
+This random forest examines the performances of 500 trees to produce the best model. Typically, the bagging method will randomly select about one-third of all the available independent features to train a sample decision tree. The first model randomly chooses ``r rf_model1$mtry`` out of ``r nrow(df_vif2)`` independent variables at each split when creating sample trees and roughly ``r paste0(round(max(rf_model1$rsq)*100,2),"%")`` of the variance is explained by the model. The second model randomly picks ``r rf_model2$mtry`` out of ``r ncol(df_train2)-1`` independent features at each split when creating sample trees and roughly ``r paste0(round(max(rf_model2$rsq)*100,2),"%")`` of the variance is explained by this model. The figure below helps visualize the models' improvements in terms of error between observations and predictions by the number of trees examined:
+
+```{r}
+# Plot forest model error
+options(scipen=0)
+par(mai=c(1,1,0.8,0.3), mfcol=c(1,2))
+plot(rf_model1,main="\nFirst RF Model",
+     lwd=2,cex.axis=0.7,cex.main=0.75, col="darkblue")
+plot(rf_model2,main="\nSecond RF Model",
+     lwd=2,cex.axis=0.7,cex.main=0.75, col="darkred")
+mtext(expression(bold("Figure 4. Error reduction vs the number of trees")), 
+      side = 3, line = -1.8, outer = TRUE, cex=1.1)
+```
+
+From figure 4, we can observe that both models are able to achieve great reduction in errors as the number of trees trained increases. Still, the reduction in errors for the first random forest model is slightly less stable compared to the second one. Next, let's compare the two models' training performance using r-squared, adjusted r-squared, RMSE, and MAPE:
+
+```{r}
+# Compare training performance
+
+# R2 <- 1 - (sum((actual-predicted)^2)/sum((actual-mean(actual))^2))
+rf_model1_r2 <- 1 - (sum((df_train$price-rf_model1$predicted)^2)/
+                     sum((df_train$price-mean(rf_model1$predicted))^2))
+rf_model2_r2 <- 1 - (sum((df_train2$price-rf_model2$predicted)^2)/
+                     sum((df_train2$price-mean(rf_model2$predicted))^2))
+
+# Adj_R2 <- 1-((1-r_squared)*(n-1)/(n-k-1))
+n_train <- nrow(df_train) # number of observations (same for both models)
+k_train <- nrow(df_vif2) # number of predictors
+rf_model1_adj_r2 <- 1-((1-rf_model1_r2)*(n_train-1)/(n_train-k_train-1))
+
+k_train2 <- ncol(df_train2)-1 # number of predictors
+rf_model2_adj_r2 <- 1-((1-rf_model2_r2)*(n_train-1)/(n_train-k_train2-1))
+
+# Combine performance scores into a data frame
+rf_model1_train <- rbind(k_train,
+                         rf_model1_r2,
+                         rf_model1_adj_r2,
+                         rmse(df_train2$price, rf_model1$predicted),
+                         mape(df_train2$price, rf_model1$predicted))
+
+rf_model2_train <- rbind(k_train2,
+                         rf_model2_r2,
+                         rf_model2_adj_r2,
+                         rmse(df_train2$price, rf_model2$predicted),
+                         mape(df_train2$price, rf_model2$predicted))
+
+compare_model <- as.data.frame(cbind(compare_lm$`Second LR Model`,
+                                     round(rf_model1_train,4),
+                                     round(rf_model2_train,4)))
+colnames(compare_model) <- c("Linear Regression Model","First RF Model","Second RF Model")
+rownames(compare_model) <- c("# Features Used","R-Squared","Adjusted R-Squared","RMSE","MAPE")
+knitr::kable(compare_model, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 7. Linear Regression vs Random Forest Training Performance") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+From table 7, all 3 models seem to have relatively high accuracy as represented by their r-squared and adjusted r-squared statistics. The second random forest model performs the best out of the 3, which have its r-squared and adjusted r-squared values at ``r round(rf_model2_r2,4)`` and ``r round(rf_model2_adj_r2,4)``, respectively. This means that this model is able to explain ``r paste0(round(rf_model2_r2,4)*100,"%")`` of the variances in the car prices. Thus, I will proceed to use _the second random forest model_ for future analysis. However, since the number of predictors used in the second random forest model is greater than the other 2 models, this model is less robust even though its prediction power remains the strongest. 
+
+Next, I'd like to examine to variable importance determined by this model. As mentioned earlier, in random forest, the training sets are sampled via a method called bagging, where not all but only part of the records are sampled, with replacement. After that, only a handful of features (in this case it is ``r rf_model2$mtry`` features) out of all the available features are chosen to grow a sample decision tree. From that, the variable importance can be calculated as the percentage increase in mean squared error (MSE) of the predictions as a result of randomly removing each independent variable. The higher the increase, the more important the feature is in estimating the dependent variable.
+
+```{r}
+# RF feature importance
+var_imp <- as.data.frame(importance(rf_model2))
+colnames(var_imp) <- c("PercIncMSE","IncNodePurity")
+var_imp <- var_imp[order(var_imp$PercIncMSE,decreasing = T),]
+var_imp <- rownames_to_column(var_imp,var="Variables")
+
+# Create barplot to show feature importance
+ggplot(var_imp, aes(x=Variables, y=PercIncMSE)) +
+  geom_col(aes(x=reorder(Variables,PercIncMSE), 
+               y=PercIncMSE,fill=PercIncMSE),show.legend = T) +
+  theme_light() +
+  coord_flip() +
+  ggtitle(expression(bold("Figure 5. Random Forest Variable Importance"))) +
+  scale_fill_viridis(discrete=F, option="viridis", direction=-1) +
+  labs(fill="%IncMSE") +
+  theme(
+    legend.position="right",
+    plot.title = element_text(hjust = 0.5),
+    #panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    #panel.border = element_blank(),
+    #axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()) +
+  geom_text(aes(x = Variables, y=PercIncMSE + 0.65*sign(PercIncMSE), label=round(PercIncMSE,1)), size = 2.5) +
+  ylab(paste0("%IncMSE","\n","(percentage increase in MSE when a variable is permuted)"))
+```
+```{r, include=F}
+#myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+#scale_fill_gradientn(colours = myPalette(100), limits=c(0, 22)) +
+
+```
+
+From figure 5, we can see that "enginesize", "curbweight", "wheelbase", "highwaympg", and "horsepower" are the top 5 most important predictors, in respective order, when it comes to forecasting car prices. This is rather similar to what was discovered in figure 3 for the linear regression model, where both "wheelbase" and "horsepower" seem to be the most influential factors affecting car prices. Interestingly, feature "doornumber" has negative importance score, which means that the removal of this feature actually improves the model accuracy.
+
+## 4. Create predictions using the testing set and compare models' performances
+
+In this part, we use the testing set to determine the accuracy of our best prediction models created so far. Similarly, these models will be evaluated using the number of features used, r-squared, adjusted r-squared, RMSE, and MAPE:
+
+```{r}
+# Create predictions for both partitioned sets
+lm_test_pred <- predict(lm_model2, df_test, interval="none")
+rf_test_pred <- predict(rf_model2, df_test2, interval="none")
+
+# Calculate R2
+lm_test_r2 <- 1 - (sum((df_test$price-exp(lm_test_pred))^2)/
+                   sum((df_test$price-mean(exp(lm_test_pred)))^2))
+rf_test_r2 <- 1 - (sum((df_test2$price-rf_test_pred)^2)/
+                   sum((df_test2$price-mean(rf_test_pred))^2))
+  
+# Calculate Adjusted_R2
+n_test <- nrow(df_test2) # number of observations (same for both models)
+k_test_lm <- nrow(df_vif2) # number of predictors for linear model
+k_test_rf <- ncol(df_test2)-1 # number of predictors for rf model
+lm_test_adj_r2 <- 1-((1-lm_test_r2)*(n_test-1)/(n_test-k_test_lm-1)) # adj r2 for linear model
+rf_test_adj_r2 <- 1-((1-rf_test_r2)*(n_test-1)/(n_test-k_test_rf-1)) # adj r2 for rf model
+
+# Calculate RMSE
+lm_test_rmse <- rmse(df_test$price, exp(lm_test_pred))
+rf_test_rmse <- rmse(df_test2$price, rf_test_pred)
+
+# Calculate MAPE
+lm_test_mape <- mape(df_test$price, exp(lm_test_pred))
+rf_test_mape <- mape(df_test2$price, rf_test_pred)
+
+# Combine values into a data frame
+lm_model_test <- rbind(format(k_test_lm,nsmall=0),
+                       round(lm_test_r2,4),
+                       round(lm_test_adj_r2,4),
+                       round(lm_test_rmse,4),
+                       round(lm_test_mape,4))
+
+rf_model_test <- rbind(format(k_test_rf,nsmall=0),
+                       round(rf_test_r2,4),
+                       round(rf_test_adj_r2,4),
+                       round(rf_test_rmse,4),
+                       round(rf_test_mape,4))
+
+compare_summary <- as.data.frame(cbind(lm_model_test,rf_model_test))
+colnames(compare_summary) <- c("Linear Regression","Random Forest")
+rownames(compare_summary) <- c("# Features Used","R-Squared","Adjusted R-Squared","RMSE","MAPE")
+knitr::kable(compare_summary, "latex",
+             booktabs = T,longtable=T,linesep = "",
+             caption="Table 8. Linear Regression vs Random Forest Testing Performance") %>%
+  kable_styling(position = "center",latex_options = c("striped", "repeat_header"))
+```
+
+Table 8 summarizes the different metrics representing the predictive power of our linear regression and random forest models. Based on the testing performance, I'd say that both models produce pretty high accuracy, with r-squared being roughly between 0.87 to 0.95. Compared to the training performance shown in table 7, the random forest model's predictive power improves while the linear regression model's predictive power worsen. This shows that the random forest model does not over fit with the training data and has great capability at generating predictions using newly introduced data. Let's visualize the 2 models' fit using scatter plots:
+
+```{r}
+# Plot predictions vs observations
+par(mai=c(1,1.1,0.8,0.4),mfcol=c(1,2))
+
+plot(x=exp(lm_test_pred),y=df_test$price,col="blue",
+     ylab=paste0("Observed Prices","\n"),xlab="Predicted Prices",
+     xlim=c(0,40000),ylim=c(0,40000),las=1,
+     main=paste0("\n","Linear Regression"), cex.main=0.9, cex.axis=0.8, cex.lab=0.8)
+abline(a=0,b=1,col="red",lwd=2)
+
+plot(x=rf_test_pred,y=df_test2$price,col="purple",
+     ylab=paste0("Observed Prices","\n"),xlab="Predicted Prices",
+     xlim=c(0,40000),ylim=c(0,40000),las=1,
+     main=paste0("\n","Random Forest"), cex.main=0.9, cex.axis=0.8, cex.lab=0.8)
+abline(a=0,b=1,col="red",lwd=2)
+
+mtext(expression(bold("Figure 6. Car price observations vs predictions across models")), 
+      side = 3, line = -1.8, outer = TRUE, cex=1.1)
+```
+
+As seen from figure 6, the data points are densely scattered around the red diagonal line, indicating that the observed values are relatively close to the predicted values for both models. However, for the random forest model, the purple points are more aligned with the diagonal line, showing its higher competency in generating accurate predictions.
+
+# III. CONCLUSIONS
+
+Both the linear regression and random forest are two popular techniques for regression predictions. In this project, they both perform relatively well in predicting prices of cars, but the random forest model still outperforms the linear regression one. Here are some pros and cons of each approach:
+
+* Pros of Linear Regression (LR):
+
+  + Interpretability: LR provides coefficients that can be interpreted to understand the relationship between the input variables and the output variable
+  + Simplicity: LR is a simple and easy-to-understand algorithm that can be implemented quickly
+  + Efficiency: LR can be faster than more complex models like random forests, especially for large datasets
+  + Stability: LR tends to be more stable than random forests, as the results are less dependent on the specific sample used to build the model
+
+* Cons of Linear Regression:
+
+  + Linearity assumption: LR assumes a linear relationship between the input variables and the output variable, which may not be true in all cases
+  + Limited flexibility: LR has limited flexibility to capture complex patterns in the data, especially when there are non-linear relationships between the variables
+  + Sensitivity to outliers: LR can be sensitive to outliers, which can distort the relationship between the variables
+  + Model assumptions: LR relies on certain assumptions about the data, such as normality and homoscedasticity, which may not hold in all cases
+
+* Pros of Random Forest (RF):
+
+  + Flexibility: RF is a highly flexible algorithm that can capture complex non-linear relationships between the input variables and the output variable
+  + Robustness: RF is less sensitive to outliers and can handle missing data well, making it a more robust model
+  + Accuracy: RF is often more accurate than linear regression, especially for complex datasets with many input variables
+  + No assumptions: RF does not make any assumptions about the data, making it a more versatile algorithm
+
+* Cons of Random Forest:
+
+  + Complexity: RF can be a complex algorithm to understand and implement, especially for beginners
+  + Overfitting: RF can be prone to overfitting, especially if the number of trees is high or the data is noisy
+  + Interpretability: RF does not provide easily interpretable coefficients, making it difficult to understand the relationship between the input variables and the output variable
+  + Training time: RF can be slower to train than linear regression, especially for large datasets
+
+In summary, linear regression is a simple, efficient, and interpretable algorithm that can provide stable results, but it has limited flexibility and can be sensitive to outliers. Random forest, on the other hand, is a more complex and flexible algorithm that can provide more accurate results, but it can be prone to overfitting and is less interpretable. The choice between these two algorithms depends on the specific problem, the size and complexity of the dataset, and the priorities of the user (e.g., interpretability vs. accuracy).
+
+\newpage
+# IV. REFERENCES
+\setlength{\parindent}{-0.4in}
+\setlength{\leftskip}{0.4in}
+\setlength{\parskip}{8pt}
+\noindent
+
+Glen, S. (2015, September 21). _Variance inflation factor._ Statistics How To. Retrieved February 14, 2023, from https://www.statisticshowto.com/variance-inflationfactor/ 
+
+Potters, C. (2021, April 30). _R-squared vs. adjusted R-squared: What's the difference?_ Investopedia. Retrieved February 14, 2023, from https://www.investopedia.com/ask/answers/012615/whats-difference-betweenrsquared-and-adjusted-rsquared.asp
+
+Raj, S. (2019, August 9). _Effects of multi-collinearity in logistic regression, SVM, RF._ Medium. Retrieved February 14, 2023, from https://medium.com/@raj5287/effects-of-multi-collinearity-in-logistic-regression-svm-rf-af6766d91f1b 
