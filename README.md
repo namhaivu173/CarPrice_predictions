@@ -12,7 +12,7 @@ alt="" title="Image Source: https://www.roadandtrack.com/reviews/a34671759/2021-
 
 ## I. Data set:
 - Downloaded from UCI Machine Learning Repository: https://archive.ics.uci.edu/ml/datasets/Automobile
-- Show pricings of various cars, along with their characteristics such as car company, horse power, engine type, etc.
+- Shows pricings of various cars, along with their characteristics such as car company, horse power, engine type, etc.
 
 ## II. Main goals:
 - Perform data cleaning and construct predictive models (Linear Regression & Random Forest) to estimate different car prices
