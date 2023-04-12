@@ -10,6 +10,9 @@ alt="" title="Image Source: https://www.roadandtrack.com/reviews/a34671759/2021-
 <sup><i>(Image Source: https://www.roadandtrack.com/reviews/a34671759/2021-performance-car-of-the-year/)</i></sup>
 </p>
 
+<b>Read the analysis along with codes here [![PDF](https://img.shields.io/badge/click%20to%20open-PDF-darkred)](https://github.com/namhaivu173/CarPrice_predictions/blob/main/CarPrice_Predictions.pdf)
+</b>
+
 ## I. Data set:
 - Downloaded from UCI Machine Learning Repository: https://archive.ics.uci.edu/ml/datasets/Automobile
 - Shows pricings of various cars, along with their characteristics such as car company, horse power, engine type, etc.
